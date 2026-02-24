@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import os
+import itertools
 
 st.set_page_config(layout="wide")
 st.title(" Forex Technical Analysis Prototype")
@@ -19,17 +20,14 @@ def add_indicators(df, ma_short, ma_long,
 
     price = df["Adj Close"]
 
-    # Moving averages
     df["MA_short"] = price.rolling(ma_short).mean()
     df["MA_long"] = price.rolling(ma_long).mean()
 
-    # MACD
     ema_fast = price.ewm(span=macd_fast, adjust=False).mean()
     ema_slow = price.ewm(span=macd_slow, adjust=False).mean()
     df["MACD"] = ema_fast - ema_slow
     df["MACD_signal"] = df["MACD"].ewm(span=macd_signal, adjust=False).mean()
 
-    # RSI
     delta = price.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -37,23 +35,6 @@ def add_indicators(df, ma_short, ma_long,
     avg_loss = loss.rolling(rsi_period).mean()
     rs = avg_gain / avg_loss
     df["RSI"] = 100 - (100 / (1 + rs))
-    
-    # --- Bollinger Bands (for bandwidth filter) ---
-    n = 20      # standard BB window
-    k = 2       # standard width multiplier
-
-    mid = price.rolling(n).mean()
-    std = price.rolling(n).std()
-
-    df["BOLL_mid"] = mid
-    df["BOLL_up"] = mid + k * std
-    df["BOLL_low"] = mid - k * std
-
-    # Bandwidth (normalized)
-    df["BOLL_bw"] = (df["BOLL_up"] - df["BOLL_low"]) / df["BOLL_mid"]
-
-    # Rolling median of bandwidth (regime threshold)
-    df["BOLL_bw_med"] = df["BOLL_bw"].rolling(60).median()
 
     return df
 
@@ -61,7 +42,6 @@ def add_indicators(df, ma_short, ma_long,
 def generate_signal(df):
 
     sig = pd.Series(0, index=df.index)
-    vol_ok = df["BOLL_bw"] > df["BOLL_bw_med"]
 
     long_cond = (
         (df["MA_short"] > df["MA_long"]) &
@@ -83,6 +63,10 @@ def generate_signal(df):
     return sig
 
 
+# ==============================
+# Performance Metrics
+# ==============================
+
 def sharpe_ratio(returns, freq=252):
     returns = returns.dropna()
     if returns.std() == 0:
@@ -96,14 +80,24 @@ def max_drawdown(equity):
     return dd.min()
 
 
+def annualized_return(equity, freq=252):
+    total_periods = len(equity)
+    return equity.iloc[-1]**(freq / total_periods) - 1
+
+
 # ==============================
-# Sidebar Controls
+# Sidebar
 # ==============================
 
 st.sidebar.header(" Strategy Parameters")
 
 pairs = [f.replace(".csv", "") for f in os.listdir(DATA_PATH)]
 selected_pair = st.sidebar.selectbox("Currency Pair", pairs)
+
+split_date = st.sidebar.date_input(
+    "Train/Test Split Date",
+    value=pd.to_datetime("2023-01-01")
+)
 
 ma_short = st.sidebar.slider("MA Short", 5, 50, 20)
 ma_long = st.sidebar.slider("MA Long", 20, 200, 60)
@@ -115,58 +109,119 @@ macd_signal = st.sidebar.slider("MACD Signal", 5, 20, 9)
 rsi_period = st.sidebar.slider("RSI Period", 5, 30, 14)
 
 run_button = st.sidebar.button("▶ Run Backtest")
+opt_button = st.sidebar.button("🔍 Optimize on Train")
 
 
 # ==============================
-# Backtest Execution
+# Load Data
 # ==============================
 
-if run_button:
+df = pd.read_csv(
+    os.path.join(DATA_PATH, f"{selected_pair}.csv"),
+    index_col=0,
+    parse_dates=True
+)
 
-    df = pd.read_csv(
-        os.path.join(DATA_PATH, f"{selected_pair}.csv"),
-        index_col=0,
-        parse_dates=True
-    )
+split_date = pd.to_datetime(split_date)
 
-    df = add_indicators(df,
-                        ma_short, ma_long,
-                        macd_fast, macd_slow, macd_signal,
-                        rsi_period)
+
+# ==============================
+# Optimization (Train only)
+# ==============================
+
+if opt_button:
+
+    st.sidebar.write("Optimizing...")
+
+    best_sharpe = -np.inf
+    best_params = None
+
+    ma_short_grid = [10, 20, 30]
+    ma_long_grid = [40, 60, 80]
+
+    for s, l in itertools.product(ma_short_grid, ma_long_grid):
+        if s >= l:
+            continue
+
+        temp = df.copy()
+        temp = add_indicators(temp, s, l,
+                              macd_fast, macd_slow,
+                              macd_signal, rsi_period)
+
+        temp["Return"] = temp["Adj Close"].pct_change()
+        temp["Signal"] = generate_signal(temp)
+        temp["Position"] = temp["Signal"].shift(1)
+        temp["Strategy_Return"] = temp["Position"] * temp["Return"]
+        temp.dropna(inplace=True)
+
+        train = temp[temp.index <= split_date]
+        equity_train = (1 + train["Strategy_Return"]).cumprod()
+
+        s_train = sharpe_ratio(train["Strategy_Return"])
+
+        if s_train > best_sharpe:
+            best_sharpe = s_train
+            best_params = (s, l)
+
+    st.sidebar.success(f"Best MA: {best_params}, Train Sharpe: {best_sharpe:.2f}")
+
+    ma_short, ma_long = best_params
+
+
+# ==============================
+# Backtest
+# ==============================
+
+if run_button or opt_button:
+
+    df = add_indicators(df, ma_short, ma_long,
+                        macd_fast, macd_slow,
+                        macd_signal, rsi_period)
 
     df["Return"] = df["Adj Close"].pct_change()
     df["Signal"] = generate_signal(df)
     df["Position"] = df["Signal"].shift(1)
-
     df["Strategy_Return"] = df["Position"] * df["Return"]
     df.dropna(inplace=True)
 
-    equity = (1 + df["Strategy_Return"]).cumprod()
-    market = (1 + df["Return"]).cumprod()
+    df_train = df[df.index <= split_date]
+    df_test = df[df.index > split_date]
 
-    total_return = equity.iloc[-1] - 1
-    market_return = market.iloc[-1] - 1
-    sharpe = sharpe_ratio(df["Strategy_Return"])
-    mdd = max_drawdown(equity)
-    trades = int((df["Position"].diff().abs() > 0).sum())
+    equity_train = (1 + df_train["Strategy_Return"]).cumprod()
+    equity_test = (1 + df_test["Strategy_Return"]).cumprod()
+    market_test = (1 + df_test["Return"]).cumprod()
+
+    # Metrics
+    total_return = equity_test.iloc[-1] - 1
+    ann_return = annualized_return(equity_test)
+    sharpe = sharpe_ratio(df_test["Strategy_Return"])
+    mdd = max_drawdown(equity_test)
+    calmar = ann_return / abs(mdd) if mdd != 0 else 0
+    trades = int((df_test["Position"].diff().abs() > 0).sum())
 
     # ==============================
-    # Display Metrics
+    # Display
     # ==============================
 
-    col1, col2, col3, col4, col5 = st.columns(5)
+    st.subheader(" Train Performance")
+    st.line_chart(equity_train)
 
-    col1.metric("Strategy Return", f"{total_return:.2%}")
-    col2.metric("Market Return", f"{market_return:.2%}")
-    col3.metric("Sharpe Ratio", f"{sharpe:.2f}")
-    col4.metric("Max Drawdown", f"{mdd:.2%}")
-    col5.metric("Trades", trades)
-
-    st.subheader(" Equity Curve")
+    st.subheader(" Test Performance")
     st.line_chart(pd.DataFrame({
-        "Strategy": equity,
-        "Market": market
+        "Strategy": equity_test,
+        "Market": market_test
     }))
 
-    st.subheader("Detailed Data")
-    st.dataframe(df)
+    st.subheader(" Test Summary Metrics")
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("Total Return", f"{total_return:.2%}")
+    col2.metric("Annual Return", f"{ann_return:.2%}")
+    col3.metric("Sharpe", f"{sharpe:.2f}")
+    col4.metric("Max Drawdown", f"{mdd:.2%}")
+    col5.metric("Calmar", f"{calmar:.2f}")
+
+    st.write(f"Trades: {trades}")
+
+    st.subheader(" Detailed Test Data")
+    st.dataframe(df_test.tail(50))
