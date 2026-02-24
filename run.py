@@ -182,10 +182,9 @@ if opt_button:
 
     st.sidebar.success(f"Best MA: {best_params}, Train Sharpe: {best_sharpe:.2f}")
 
-    ma_short, ma_long = best_params
-
     st.session_state.ma_short = best_params[0]
     st.session_state.ma_long = best_params[1]
+    ma_short, ma_long = best_params
 
 
 # ==============================
@@ -257,5 +256,6 @@ if run_button or opt_button:
 
     st.subheader(" Detailed Test Data")
     st.dataframe(df_test.tail(50))
+
 
 
