@@ -118,8 +118,6 @@ split_date = st.sidebar.date_input(
     value=pd.to_datetime("2023-01-01")
 )
 
-ma_short = st.sidebar.slider("MA Short", 5, 50, 20)
-ma_long = st.sidebar.slider("MA Long", 20, 200, 60)
 
 macd_fast = st.sidebar.slider("MACD Fast", 5, 20, 12)
 macd_slow = st.sidebar.slider("MACD Slow", 20, 40, 26)
@@ -186,8 +184,8 @@ if opt_button:
 
     ma_short, ma_long = best_params
 
-st.session_state.ma_short = best_params[0]
-st.session_state.ma_long = best_params[1]
+    st.session_state.ma_short = best_params[0]
+    st.session_state.ma_long = best_params[1]
 
 
 # ==============================
@@ -208,12 +206,6 @@ if run_button or opt_button:
 
     df_train = df[df.index <= split_date]
     df_test = df[df.index > split_date]
-  # ==============================
-# Split
-# ==============================
-
-    df_train = df[df.index <= split_date].copy()
-    df_test = df[df.index > split_date].copy()
 
 # ==============================
 # Metrics
@@ -265,4 +257,5 @@ if run_button or opt_button:
 
     st.subheader(" Detailed Test Data")
     st.dataframe(df_test.tail(50))
+
 
