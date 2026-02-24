@@ -91,6 +91,25 @@ def annualized_return(equity, freq=252):
 
 st.sidebar.header(" Strategy Parameters")
 
+# 
+if "ma_short" not in st.session_state:
+    st.session_state.ma_short = 20
+
+if "ma_long" not in st.session_state:
+    st.session_state.ma_long = 60
+
+#
+ma_short = st.sidebar.slider(
+    "MA Short",
+    5, 50,
+    value=st.session_state.ma_short
+)
+
+ma_long = st.sidebar.slider(
+    "MA Long",
+    20, 200,
+    value=st.session_state.ma_long
+)
 pairs = [f.replace(".csv", "") for f in os.listdir(DATA_PATH)]
 selected_pair = st.sidebar.selectbox("Currency Pair", pairs)
 
@@ -167,6 +186,9 @@ if opt_button:
 
     ma_short, ma_long = best_params
 
+st.session_state.ma_short = best_params[0]
+st.session_state.ma_long = best_params[1]
+
 
 # ==============================
 # Backtest
@@ -186,18 +208,35 @@ if run_button or opt_button:
 
     df_train = df[df.index <= split_date]
     df_test = df[df.index > split_date]
+  # ==============================
+# Split
+# ==============================
+
+    df_train = df[df.index <= split_date].copy()
+    df_test = df[df.index > split_date].copy()
+
+# ==============================
+# Metrics
+# ==============================
+
+    sharpe_train = sharpe_ratio(df_train["Strategy_Return"])
+    sharpe_test = sharpe_ratio(df_test["Strategy_Return"])
 
     equity_train = (1 + df_train["Strategy_Return"]).cumprod()
     equity_test = (1 + df_test["Strategy_Return"]).cumprod()
+
+    market_train = (1 + df_train["Return"]).cumprod()
     market_test = (1 + df_test["Return"]).cumprod()
+
+
 
     # Metrics
     total_return = equity_test.iloc[-1] - 1
     ann_return = annualized_return(equity_test)
-    sharpe = sharpe_ratio(df_test["Strategy_Return"])
     mdd = max_drawdown(equity_test)
     calmar = ann_return / abs(mdd) if mdd != 0 else 0
-    trades = int((df_test["Position"].diff().abs() > 0).sum())
+    trades_train = int((df_train["Position"].diff().abs() > 0).sum())
+    trades_test = int((df_test["Position"].diff().abs() > 0).sum())
 
     # ==============================
     # Display
@@ -214,14 +253,16 @@ if run_button or opt_button:
 
     st.subheader(" Test Summary Metrics")
 
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
     col1.metric("Total Return", f"{total_return:.2%}")
     col2.metric("Annual Return", f"{ann_return:.2%}")
-    col3.metric("Sharpe", f"{sharpe:.2f}")
-    col4.metric("Max Drawdown", f"{mdd:.2%}")
-    col5.metric("Calmar", f"{calmar:.2f}")
+    col3.metric("Train Sharpe", f"{sharpe_train:.2f}")
+    col4.metric("Test Sharpe", f"{sharpe_test:.2f}")
+    col5.metric("Max Drawdown", f"{mdd:.2%}")
+    col6.metric("Calmar", f"{calmar:.2f}")
 
-    st.write(f"Trades: {trades}")
+    st.write(f"Trades: {trades_test}")
 
     st.subheader(" Detailed Test Data")
     st.dataframe(df_test.tail(50))
+
