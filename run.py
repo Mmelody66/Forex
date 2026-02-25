@@ -4,7 +4,7 @@ import numpy as np
 import os
 
 st.set_page_config(layout="wide")
-st.title("📈 Technical Analysis Prototype – Three Strategy Framework")
+st.title(" Technical Analysis Prototype – Three Strategy Framework")
 
 DATA_PATH = "data/raw"
 
@@ -206,5 +206,6 @@ if run_button:
     col5.metric("Max Drawdown", f"{mdd:.2%}")
 
     st.write(f"Trades (Test): {trades}")
+
 
 
