@@ -2,70 +2,82 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import os
-import itertools
 
 st.set_page_config(layout="wide")
-st.title(" Forex Technical Analysis Prototype")
+st.title("📈 Technical Analysis Prototype – Three Strategy Framework")
 
 DATA_PATH = "data/raw"
 
 
-# ==============================
-# Indicator Functions
-# ==============================
+# =====================================
+# Indicator Calculations
+# =====================================
 
-def add_indicators(df, ma_short, ma_long,
+def add_indicators(df,
+                   rsi_period,
                    macd_fast, macd_slow, macd_signal,
-                   rsi_period):
+                   bb_period, bb_k):
 
     price = df["Adj Close"]
 
-    df["MA_short"] = price.rolling(ma_short).mean()
-    df["MA_long"] = price.rolling(ma_long).mean()
+    # ----- RSI -----
+    delta = price.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
 
+    avg_gain = gain.rolling(rsi_period).mean()
+    avg_loss = loss.rolling(rsi_period).mean()
+
+    rs = avg_gain / avg_loss
+    df["RSI"] = 100 - (100 / (1 + rs))
+
+    # ----- MACD -----
     ema_fast = price.ewm(span=macd_fast, adjust=False).mean()
     ema_slow = price.ewm(span=macd_slow, adjust=False).mean()
     df["MACD"] = ema_fast - ema_slow
     df["MACD_signal"] = df["MACD"].ewm(span=macd_signal, adjust=False).mean()
 
-    delta = price.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(rsi_period).mean()
-    avg_loss = loss.rolling(rsi_period).mean()
-    rs = avg_gain / avg_loss
-    df["RSI"] = 100 - (100 / (1 + rs))
+    # ----- Bollinger -----
+    sma = price.rolling(bb_period).mean()
+    std = price.rolling(bb_period).std()
+
+    df["BOLL_mid"] = sma
+    df["BOLL_up"] = sma + bb_k * std
+    df["BOLL_low"] = sma - bb_k * std
 
     return df
 
 
-def generate_signal(df):
+# =====================================
+# Signal Generation (5.2.2)
+# =====================================
+
+def generate_signal(df, strategy,
+                    rsi_lower, rsi_upper):
 
     sig = pd.Series(0, index=df.index)
 
-    long_cond = (
-        (df["MA_short"] > df["MA_long"]) &
-        (df["MACD"] > df["MACD_signal"]) &
-        (df["MACD"] > 0) &
-        (df["RSI"] > 55)
-    )
+    if strategy == "RSI":
 
-    short_cond = (
-        (df["MA_short"] < df["MA_long"]) &
-        (df["MACD"] < df["MACD_signal"]) &
-        (df["MACD"] < 0) &
-        (df["RSI"] < 45)
-    )
+        sig[df["RSI"] < rsi_lower] = 1
+        sig[df["RSI"] > rsi_upper] = -1
 
-    sig[long_cond] = 1
-    sig[short_cond] = -1
+    elif strategy == "MACD":
+
+        sig[df["MACD"] > df["MACD_signal"]] = 1
+        sig[df["MACD"] < df["MACD_signal"]] = -1
+
+    elif strategy == "Bollinger":
+
+        sig[df["Adj Close"] < df["BOLL_low"]] = 1
+        sig[df["Adj Close"] > df["BOLL_up"]] = -1
 
     return sig
 
 
-# ==============================
+# =====================================
 # Performance Metrics
-# ==============================
+# =====================================
 
 def sharpe_ratio(returns, freq=252):
     returns = returns.dropna()
@@ -81,181 +93,118 @@ def max_drawdown(equity):
 
 
 def annualized_return(equity, freq=252):
-    total_periods = len(equity)
-    return equity.iloc[-1]**(freq / total_periods) - 1
+    n = len(equity)
+    return equity.iloc[-1] ** (freq / n) - 1
 
 
-# ==============================
-# Sidebar
-# ==============================
+# =====================================
+# Sidebar Controls
+# =====================================
 
-st.sidebar.header(" Strategy Parameters")
+st.sidebar.header("Strategy Selection")
 
-# 
-if "ma_short" not in st.session_state:
-    st.session_state.ma_short = 20
-
-if "ma_long" not in st.session_state:
-    st.session_state.ma_long = 60
-
-#
-ma_short = st.sidebar.slider(
-    "MA Short",
-    5, 50,
-    value=st.session_state.ma_short
-)
-
-ma_long = st.sidebar.slider(
-    "MA Long",
-    20, 200,
-    value=st.session_state.ma_long
-)
 pairs = [f.replace(".csv", "") for f in os.listdir(DATA_PATH)]
 selected_pair = st.sidebar.selectbox("Currency Pair", pairs)
+
+strategy = st.sidebar.radio(
+    "Choose Strategy",
+    ["RSI", "MACD", "Bollinger"]
+)
 
 split_date = st.sidebar.date_input(
     "Train/Test Split Date",
     value=pd.to_datetime("2023-01-01")
 )
 
+st.sidebar.header("RSI Parameters")
 
-macd_fast = st.sidebar.slider("MACD Fast", 5, 20, 12)
-macd_slow = st.sidebar.slider("MACD Slow", 20, 40, 26)
-macd_signal = st.sidebar.slider("MACD Signal", 5, 20, 9)
+rsi_period = st.sidebar.slider("RSI Lookback", 5, 30, 14)
+rsi_lower = st.sidebar.slider("RSI Lower Threshold", 10, 50, 30)
+rsi_upper = st.sidebar.slider("RSI Upper Threshold", 50, 90, 70)
 
-rsi_period = st.sidebar.slider("RSI Period", 5, 30, 14)
+st.sidebar.header("MACD Parameters")
+
+macd_fast = st.sidebar.slider("MACD Fast EMA", 5, 20, 12)
+macd_slow = st.sidebar.slider("MACD Slow EMA", 20, 40, 26)
+macd_signal = st.sidebar.slider("MACD Signal EMA", 5, 20, 9)
+
+st.sidebar.header("Bollinger Parameters")
+
+bb_period = st.sidebar.slider("BB Moving Average Period", 10, 50, 20)
+bb_k = st.sidebar.slider("BB Std Multiplier", 1.0, 3.0, 2.0)
 
 run_button = st.sidebar.button("▶ Run Backtest")
-opt_button = st.sidebar.button("🔍 Optimize on Train")
 
 
-# ==============================
-# Load Data
-# ==============================
-
-df = pd.read_csv(
-    os.path.join(DATA_PATH, f"{selected_pair}.csv"),
-    index_col=0,
-    parse_dates=True
-)
-
-split_date = pd.to_datetime(split_date)
-
-
-# ==============================
-# Optimization (Train only)
-# ==============================
-
-if opt_button:
-
-    st.sidebar.write("Optimizing...")
-
-    best_sharpe = -np.inf
-    best_params = None
-
-    ma_short_grid = [10, 20, 30]
-    ma_long_grid = [40, 60, 80]
-
-    for s, l in itertools.product(ma_short_grid, ma_long_grid):
-        if s >= l:
-            continue
-
-        temp = df.copy()
-        temp = add_indicators(temp, s, l,
-                              macd_fast, macd_slow,
-                              macd_signal, rsi_period)
-
-        temp["Return"] = temp["Adj Close"].pct_change()
-        temp["Signal"] = generate_signal(temp)
-        temp["Position"] = temp["Signal"].shift(1)
-        temp["Strategy_Return"] = temp["Position"] * temp["Return"]
-        temp.dropna(inplace=True)
-
-        train = temp[temp.index <= split_date]
-        equity_train = (1 + train["Strategy_Return"]).cumprod()
-
-        s_train = sharpe_ratio(train["Strategy_Return"])
-
-        if s_train > best_sharpe:
-            best_sharpe = s_train
-            best_params = (s, l)
-
-    st.sidebar.success(f"Best MA: {best_params}, Train Sharpe: {best_sharpe:.2f}")
-
-    st.session_state.ma_short = best_params[0]
-    st.session_state.ma_long = best_params[1]
-    ma_short, ma_long = best_params
-
-
-# ==============================
+# =====================================
 # Backtest
-# ==============================
+# =====================================
 
-if run_button or opt_button:
+if run_button:
 
-    df = add_indicators(df, ma_short, ma_long,
-                        macd_fast, macd_slow,
-                        macd_signal, rsi_period)
+    df = pd.read_csv(
+        os.path.join(DATA_PATH, f"{selected_pair}.csv"),
+        index_col=0,
+        parse_dates=True
+    )
+
+    df = add_indicators(df,
+                        rsi_period,
+                        macd_fast, macd_slow, macd_signal,
+                        bb_period, bb_k)
 
     df["Return"] = df["Adj Close"].pct_change()
-    df["Signal"] = generate_signal(df)
+    df["Signal"] = generate_signal(df, strategy,
+                                   rsi_lower, rsi_upper)
+
+    # 5.2.3 Position Sizing: fixed ±1
     df["Position"] = df["Signal"].shift(1)
     df["Strategy_Return"] = df["Position"] * df["Return"]
+
     df.dropna(inplace=True)
+
+    split_date = pd.to_datetime(split_date)
 
     df_train = df[df.index <= split_date]
     df_test = df[df.index > split_date]
 
-# ==============================
-# Metrics
-# ==============================
+    equity_train = (1 + df_train["Strategy_Return"]).cumprod()
+    equity_test = (1 + df_test["Strategy_Return"]).cumprod()
+
+    market_test = (1 + df_test["Return"]).cumprod()
 
     sharpe_train = sharpe_ratio(df_train["Strategy_Return"])
     sharpe_test = sharpe_ratio(df_test["Strategy_Return"])
 
-    equity_train = (1 + df_train["Strategy_Return"]).cumprod()
-    equity_test = (1 + df_test["Strategy_Return"]).cumprod()
-
-    market_train = (1 + df_train["Return"]).cumprod()
-    market_test = (1 + df_test["Return"]).cumprod()
-
-
-
-    # Metrics
     total_return = equity_test.iloc[-1] - 1
     ann_return = annualized_return(equity_test)
     mdd = max_drawdown(equity_test)
     calmar = ann_return / abs(mdd) if mdd != 0 else 0
-    trades_train = int((df_train["Position"].diff().abs() > 0).sum())
-    trades_test = int((df_test["Position"].diff().abs() > 0).sum())
+    trades = int((df_test["Position"].diff().abs() > 0).sum())
 
-    # ==============================
+    # =====================================
     # Display
-    # ==============================
+    # =====================================
 
-    st.subheader(" Train Performance")
+    st.subheader("Train Performance")
     st.line_chart(equity_train)
 
-    st.subheader(" Test Performance")
+    st.subheader("Test Performance")
     st.line_chart(pd.DataFrame({
         "Strategy": equity_test,
         "Market": market_test
     }))
 
-    st.subheader(" Test Summary Metrics")
+    st.subheader("Test Summary")
 
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    col1, col2, col3, col4, col5 = st.columns(5)
+
     col1.metric("Total Return", f"{total_return:.2%}")
     col2.metric("Annual Return", f"{ann_return:.2%}")
     col3.metric("Train Sharpe", f"{sharpe_train:.2f}")
     col4.metric("Test Sharpe", f"{sharpe_test:.2f}")
     col5.metric("Max Drawdown", f"{mdd:.2%}")
-    col6.metric("Calmar", f"{calmar:.2f}")
 
-    st.write(f"Trades: {trades_test}")
-
-    st.subheader(" Detailed Test Data")
-    st.dataframe(df_test.tail(50))
-
+    st.write(f"Trades (Test): {trades}")
 
 
